@@ -19,7 +19,8 @@ RUN pip install --no-cache-dir \
     python-docx \
     rapidfuzz \
     pdf2docx \
-    beautifulsoup4
+    beautifulsoup4 \
+    ollama
 
 # Copy project files
 COPY . /workspace
