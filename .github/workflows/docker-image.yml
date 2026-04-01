@@ -15,6 +15,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build the Docker image
-      run: docker build -t paddleocr_image:latest .
+      run: docker build -t paddleocr_image:latest . \
            docker run --rm -v $(pwd):/workspace paddleocr_image:latest
 
