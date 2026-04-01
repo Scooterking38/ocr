@@ -1,6 +1,6 @@
 import json
 from paddleocr import PaddleOCR
-from ollama import Ollama
+import ollama
 import pandas as pd
 
 # Initialize PaddleOCR (English)
@@ -22,7 +22,6 @@ for line in result[0]:
 
 # Function to get box center Y
 def box_center_y(box):
-    # Flatten coordinates in case nested lists appear
     flat = []
     for b in box:
         if isinstance(b, list):
@@ -32,36 +31,59 @@ def box_center_y(box):
     y_coords = flat[1::2]
     return sum(y_coords) / len(y_coords)
 
+# Function to get min X (for left-to-right sorting)
+def box_min_x(box):
+    flat = []
+    for b in box:
+        if isinstance(b, list):
+            flat.extend(b)
+        else:
+            flat.append(b)
+    x_coords = flat[0::2]
+    return min(x_coords)
+
 # Sort OCR data top-to-bottom, then left-to-right
 ocr_data_sorted = sorted(
     ocr_data,
-    key=lambda b: (box_center_y(b["box"]), min(coord for i, coord in enumerate(b["box"]) if i % 2 == 0))
+    key=lambda b: (box_center_y(b["box"]), box_min_x(b["box"]))
 )
 
 # Combine text in reading order
 receipt_text = "\n".join([entry["text"] for entry in ocr_data_sorted])
 
-# Save for inspection
+# Save OCR output for inspection
 with open("ocr_results_ordered.txt", "w") as f:
     f.write(receipt_text)
 
 # --- Use Ollama LLM to parse items ---
-model = Ollama(model="llama2")  # replace with your local model name
 
 prompt = f"""
-You are a receipt parser. Extract the following details in CSV format:
-- Item name
-- Price
-- Shop name (if present)
+Extract purchased items from this receipt.
 
-Only include lines that are actual purchased items with prices.
-Output CSV with columns: Item,Price,Shop
+Return ONLY valid CSV.
+No explanations.
+
+Format exactly:
+Item,Price,Shop
+
+Rules:
+- Only include real purchased items
+- Ignore totals, dates, IDs
+- Price must be numeric
+
 OCR text:
 {receipt_text}
 """
 
-response = model.chat(prompt)
-csv_text = response.text.strip()
+# Call Ollama (new API)
+response = ollama.chat(
+    model="llama2",  # change if needed (e.g., llama3)
+    messages=[
+        {"role": "user", "content": prompt}
+    ]
+)
+
+csv_text = response["message"]["content"].strip()
 
 # Save CSV
 with open("receipt_items.csv", "w") as f:
