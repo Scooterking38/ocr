@@ -25,4 +25,4 @@ RUN pip install --no-cache-dir \
 # Copy project files
 COPY . /workspace
 
-CMD ["python", "read_receipts.py", "image.jpg", "image2.jpg"]
+CMD ["python", "main.py", "image.jpg", "image2.jpg"]
