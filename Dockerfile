@@ -24,5 +24,5 @@ RUN pip install --no-cache-dir \
 
 # Copy project files
 COPY . /workspace
-
+CMD ["ollama", "serve"]
 CMD ["python", "main.py", "image.jpg", "image2.jpg"]
