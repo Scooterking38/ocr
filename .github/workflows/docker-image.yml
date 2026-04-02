@@ -131,7 +131,7 @@ jobs:
         run: |
           cd paddleocr_project
           docker compose build
-          docker compose run --rm paddleocr
+          docker compose run --rm paddleocr --user root
 
       # 9️⃣ Upload the CSV as an artifact
       - name: Upload CSV
