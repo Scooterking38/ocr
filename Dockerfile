@@ -1,5 +1,5 @@
 # Use PaddleOCR prebuilt image
-FROM paddleocr/paddleocr:latest
+FROM paddlepaddle/paddle:3.3.0
 
 # Set working directory
 WORKDIR /workspace
