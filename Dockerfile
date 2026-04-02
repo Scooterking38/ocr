@@ -6,6 +6,7 @@ WORKDIR /workspace
 RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
+    zstd \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Ollama (SERVER, not just Python package)
