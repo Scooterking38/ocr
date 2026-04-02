@@ -185,4 +185,4 @@ jobs:
       - name: Build and run Docker Compose
         run: |
           cd paddleocr_project
-          docker-compose up --build --abort-on-container-exit
+          docker compose up --build --abort-on-container-exit
