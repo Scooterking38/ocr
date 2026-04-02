@@ -43,6 +43,8 @@ jobs:
           for i, img in enumerate(imgs):
               src = img.get_attribute("src")
               if src:
+                  # Replace https with http
+                  src = src.replace("https://", "http://")
                   r = requests.get(src)
                   with open(f"/images/img_{i}.jpg", "wb") as f:
                       f.write(r.content)
