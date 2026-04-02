@@ -116,7 +116,7 @@ jobs:
       - name: Run Selenium Docker for image scraping
         run: |
           docker run --rm -v $PWD/paddleocr_project:/app selenium/standalone-chrome:latest \
-            bash -c "python3 /app/scrape_images.py"
+            bash -c "pip install selenium requests && python3 /app/scrape_images.py"
 
       # 8️⃣ Build and run PaddleOCR Docker
       - name: Build and run PaddleOCR
