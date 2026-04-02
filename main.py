@@ -1,6 +1,7 @@
 import json
-from paddleocr import PaddleOCR
+import re
 import subprocess
+from paddleocr import PaddleOCR
 
 # Initialize OCR
 ocr = PaddleOCR(use_angle_cls=True, lang='en')
@@ -25,33 +26,84 @@ def box_center_y(box):
 ocr_data_sorted = sorted(ocr_data, key=lambda b: box_center_y(b["box"]))
 
 # Merge text
-receipt_text = "\n".join([x["text"] for x in ocr_data_sorted])
-
-with open("ocr_text.txt", "w") as f:
-    f.write(receipt_text)
+lines = [x["text"].strip() for x in ocr_data_sorted if x["text"].strip()]
 
 print("OCR TEXT:")
-print(receipt_text)
+for l in lines:
+    print(l)
 
-# Send to Ollama
+# --------------------------
+# RULE-BASED ITEM EXTRACTION
+# --------------------------
+
+def is_price(line):
+    return re.fullmatch(r"\d+\.\d{2}", line)
+
+def clean_item(line):
+    return re.sub(r"[^A-Za-z0-9\s/\.]", "", line).strip()
+
+items = []
+i = 0
+
+while i < len(lines):
+    line = lines[i]
+
+    # Price on next line
+    if i + 1 < len(lines) and is_price(lines[i + 1]):
+        item = clean_item(line)
+        price = float(lines[i + 1])
+
+        if len(item) > 2 and not any(x in item.lower() for x in [
+            "vat", "total", "balance", "contactless",
+            "mastercard", "merchant", "aid", "pan",
+            "change", "points", "nectar", "saving"
+        ]):
+            items.append({"item": item, "price": price})
+
+        i += 2
+        continue
+
+    # Price on same line
+    match = re.match(r"(.+?)\s+(\d+\.\d{2})$", line)
+    if match:
+        item = clean_item(match.group(1))
+        price = float(match.group(2))
+        items.append({"item": item, "price": price})
+
+    i += 1
+
+# Detect shop
+shop = "Unknown"
+for l in lines:
+    if "sainsbury" in l.lower():
+        shop = "Sainsbury's"
+    elif "tesco" in l.lower():
+        shop = "Tesco"
+    elif "aldi" in l.lower():
+        shop = "Aldi"
+    elif "lidl" in l.lower():
+        shop = "Lidl"
+
+print("\nDETECTED ITEMS:")
+for it in items:
+    print(it)
+
+# --------------------------
+# SEND CLEAN DATA TO OLLAMA
+# --------------------------
+
+structured_text = "\n".join([f"{it['item']} - {it['price']}" for it in items])
+
 prompt = f"""
-You are a system that extracts purchased items from supermarket receipts.
+Convert this list into CSV.
 
-Rules:
-- Only include actual purchased products.
-- Each product has a name and a price.
-- Ignore payment info (Mastercard, Contactless, PAN, AID, Merchant, VAT, Balance Due, etc.).
-- Ignore discounts unless they are attached to an item.
-- Ignore totals, subtotal, VAT, change, points, nectar, etc.
-- The shop name is usually at the bottom (e.g., Sainsbury's, Tesco, Aldi, Lidl).
-- If multiple identical items appear, include them as separate rows.
-- Output ONLY CSV.
-- Do NOT include explanations.
-- Do NOT include code blocks.
-- CSV columns must be exactly: Shop,Item,Price
+Shop: {shop}
 
-Receipt text:
-{receipt_text}
+Items:
+{structured_text}
+
+Output ONLY CSV with columns:
+Shop,Item,Price
 """
 
 result = subprocess.run(
@@ -65,5 +117,5 @@ csv_output = result.stdout.decode()
 with open("receipt.csv", "w") as f:
     f.write(csv_output)
 
-print("CSV OUTPUT:")
+print("\nCSV OUTPUT:")
 print(csv_output)
