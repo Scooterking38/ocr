@@ -1,4 +1,3 @@
-# main.py
 import re
 import cv2
 import numpy as np
@@ -6,15 +5,20 @@ from paddleocr import PaddleOCR
 from difflib import SequenceMatcher
 from pathlib import Path
 
+# --------------------------
+# CONFIG
+# --------------------------
 INPUT_DIR = Path("aragonindustries.uk/photos")
 OUTPUT_DIR = Path("aragonindustries.uk/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_CSV = OUTPUT_DIR / "all_receipts.csv"
 
-BAD_WORDS = ["vat", "total", "balance", "contactless", "mastercard",
-             "merchant", "aid", "pan", "change", "points", "nectar",
-             "saving", "originalprice", "price reduction", "reduction",
-             "new price", "old price", "sub total", "www."]
+BAD_WORDS = [
+    "vat", "total", "balance", "contactless", "mastercard",
+    "merchant", "aid", "pan", "change", "points", "nectar",
+    "saving", "originalprice", "price reduction", "reduction",
+    "new price", "old price", "sub total", "www."
+]
 
 CORRECTIONS = {
     "TSUES": "JS RED PEPPER SINGLE",
@@ -23,8 +27,13 @@ CORRECTIONS = {
     "JS S/SKIM MLK2.272L": "JS S/SKIM MLK 2.272L"
 }
 
+# --------------------------
+# PREPROCESSING FUNCTIONS
+# --------------------------
 def preprocess_image(path, max_width=1024):
     img = cv2.imread(str(path))
+    if img is None:
+        raise FileNotFoundError(f"{path} not found")
     if img.shape[1] > max_width:
         scale = max_width / img.shape[1]
         img = cv2.resize(img, (max_width, int(img.shape[0] * scale)))
@@ -40,8 +49,14 @@ def preprocess_image(path, max_width=1024):
         angle = -angle
     (h, w) = thresh.shape
     M = cv2.getRotationMatrix2D((w // 2, h // 2), -angle, 1.0)
-    return cv2.warpAffine(thresh, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    deskewed = cv2.warpAffine(thresh, M, (w, h),
+                              flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_REPLICATE)
+    return deskewed
 
+# --------------------------
+# OCR FUNCTIONS
+# --------------------------
 ocr = PaddleOCR(use_angle_cls=True, lang='en')
 
 def extract_lines(img):
@@ -53,6 +68,9 @@ def extract_lines(img):
     ocr_data_sorted = sorted(ocr_data, key=lambda b: sum(pt[1] for pt in b["box"]) / len(b["box"]))
     return [x["text"] for x in ocr_data_sorted if x["text"]]
 
+# --------------------------
+# ITEM EXTRACTION
+# --------------------------
 def clean_item(line):
     line = re.sub(r"([A-Za-z])(\d)", r"\1 \2", line)
     line = re.sub(r"[^A-Za-z0-9\s/\.]", "", line)
@@ -84,6 +102,9 @@ def extract_items(lines):
             it["item"] = CORRECTIONS[it["item"]]
     return items
 
+# --------------------------
+# MERGE DUPLICATES
+# --------------------------
 def merge_duplicates(items):
     merged = []
     for it in items:
@@ -98,9 +119,13 @@ def merge_duplicates(items):
             merged.append({"item": it["item"], "qty": 1, "price": it["price"], "total": it["price"]})
     return merged
 
+# --------------------------
+# PROCESS ALL IMAGES
+# --------------------------
 all_items = []
-for img_file in INPUT_DIR.glob("*.[jp][pn]g"):
-    print(f"Processing {img_file.name} ...")
+
+for img_file in INPUT_DIR.glob("*.[jp][pn]g"):  # matches .jpg and .png
+    print(f"\nProcessing {img_file.name} ...")
     preprocessed_img = preprocess_image(img_file)
     lines = extract_lines(preprocessed_img)
     items = extract_items(lines)
