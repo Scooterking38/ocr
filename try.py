@@ -132,10 +132,16 @@ for img_file in INPUT_DIR.glob("*.[jp][pn]g"):  # matches .jpg and .png
     all_items.extend(items)
 
 merged_items = merge_duplicates(all_items)
+# Build CSV content
+csv_content = "Item,Qty,Price,Total\n"
+for m in merged_items:
+    csv_content += f"{m['item']},{m['qty']},{m['price']:.2f},{m['total']:.2f}\n"
 
+# Write to file
 with open(OUTPUT_CSV, "w") as f:
-    f.write("Item,Qty,Price,Total\n")
-    for m in merged_items:
-        f.write(f"{m['item']},{m['qty']},{m['price']:.2f},{m['total']:.2f}\n")
+    f.write(csv_content)
+
+# Print to console
+print(csv_content)
 
 print(f"\n✅ All images processed. CSV saved as {OUTPUT_CSV}")
