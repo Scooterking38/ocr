@@ -1,113 +1,99 @@
-name: PaddleOCR + Selenium Setup
+name: PaddleOCR Automation
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
-  setup_and_run:
+  build-and-run:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Create project structure
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Create project files
         run: |
           mkdir -p paddleocr_project/images
-          mkdir -p paddleocr_project/output
 
-      - name: Create Dockerfile for Selenium
-        run: |
+          # ---------- Dockerfile for Selenium ----------
           cat > paddleocr_project/Dockerfile.selenium << 'EOF'
           FROM selenium/standalone-chrome:latest
           WORKDIR /app
-          COPY fetch_images.py /app/fetch_images.py
-          COPY images /app/images
-          CMD ["python3", "fetch_images.py"]
+          COPY process_receipts_selenium.py /app/process_receipts_selenium.py
+          CMD ["python3", "/app/process_receipts_selenium.py"]
           EOF
 
-      - name: Create Dockerfile for PaddleOCR
-        run: |
+          # ---------- Dockerfile for PaddleOCR ----------
           cat > paddleocr_project/Dockerfile.paddle << 'EOF'
           FROM python:3.10-slim
           WORKDIR /app
-          RUN apt-get update && apt-get install -y \
+          RUN apt-get update && apt-get install -y --no-install-recommends \
               libglib2.0-0 libsm6 libxext6 libxrender-dev libgtk2.0-dev \
-              ffmpeg wget unzip git xvfb
-          RUN pip install --no-cache-dir paddleocr==3.0.0 opencv-python-headless numpy beautifulsoup4 requests difflib pandas
-          COPY process_receipts.py /app/process_receipts.py
+              ffmpeg wget unzip git xvfb \
+              && rm -rf /var/lib/apt/lists/*
+          RUN pip install --upgrade pip
+          RUN pip install --no-cache-dir paddleocr==3.0.0 opencv-python-headless numpy beautifulsoup4 requests pandas
+          COPY process_receipts_paddle.py /app/process_receipts_paddle.py
           COPY images /app/images
-          COPY output /app/output
-          CMD ["python3", "process_receipts.py"]
+          CMD ["python", "process_receipts_paddle.py"]
           EOF
 
-      - name: Create fetch_images.py
-        run: |
-          cat > paddleocr_project/fetch_images.py << 'EOF'
-          import os
+          # ---------- Selenium scraper script ----------
+          cat > paddleocr_project/process_receipts_selenium.py << 'EOF'
           from selenium import webdriver
           from selenium.webdriver.chrome.options import Options
-          from urllib.parse import urljoin
-          import requests
+          import os, time
 
           BASE_URL = "http://aragonindustries.uk/photos"
           OUTPUT_DIR = "images"
           os.makedirs(OUTPUT_DIR, exist_ok=True)
 
           chrome_options = Options()
-          chrome_options.add_argument("--headless")
+          chrome_options.add_argument("--headless=new")
+          chrome_options.add_argument("--disable-gpu")
           chrome_options.add_argument("--no-sandbox")
-          chrome_options.add_argument("--disable-dev-shm-usage")
+
           driver = webdriver.Chrome(options=chrome_options)
           driver.get(BASE_URL)
+          time.sleep(5)  # wait for page to load
 
           imgs = driver.find_elements("tag name", "img")
-          print(f"Found {len(imgs)} images")
+          print(f"[INFO] Found {len(imgs)} images")
+
           for i, img in enumerate(imgs):
               src = img.get_attribute("src")
               if src:
-                  response = requests.get(src)
                   filename = os.path.join(OUTPUT_DIR, f"img_{i}.jpg")
-                  with open(filename, "wb") as f:
-                      f.write(response.content)
-                  print(f"Saved {filename}")
+                  os.system(f"wget -q '{src}' -O '{filename}'")
+                  print(f"[INFO] Downloaded {filename}")
           driver.quit()
           EOF
 
-      - name: Create process_receipts.py
-        run: |
-          cat > paddleocr_project/process_receipts.py << 'EOF'
-          import os
-          import cv2
-          import numpy as np
+          # ---------- PaddleOCR processor script ----------
+          cat > paddleocr_project/process_receipts_paddle.py << 'EOF'
+          import cv2, numpy as np, re, os
           from paddleocr import PaddleOCR
-          import re
           from difflib import SequenceMatcher
-          from pathlib import Path
+          import pandas as pd
 
-          IMAGE_DIR = "images"
-          OUTPUT_DIR = "output"
-          OUTPUT_CSV = os.path.join(OUTPUT_DIR, "all_receipts.csv")
-          os.makedirs(OUTPUT_DIR, exist_ok=True)
+          INPUT_DIR = "images"
+          OUTPUT_CSV = "all_receipts.csv"
 
           BAD_WORDS = ["vat","total","balance","contactless","mastercard","merchant","aid","pan","change","points","nectar","saving","originalprice","price reduction","reduction","new price","old price","sub total","www."]
+          CORRECTIONS = {}
 
           ocr = PaddleOCR(use_angle_cls=True, lang='en')
 
-          def preprocess(img):
-              gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-              _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-              if np.mean(thresh) > 127:
-                  thresh = 255 - thresh
-              coords = np.column_stack(np.where(thresh < 255))
-              angle = cv2.minAreaRect(coords)[-1]
-              if angle < -45:
-                  angle = -(90 + angle)
-              else:
-                  angle = -angle
-              (h, w) = thresh.shape
-              M = cv2.getRotationMatrix2D((w//2, h//2), -angle, 1.0)
-              deskewed = cv2.warpAffine(thresh, M, (w,h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-              return deskewed
+          def clean_item(line):
+              line = re.sub(r"([A-Za-z])(\d)", r"\1 \2", line)
+              line = re.sub(r"[^A-Za-z0-9\s/\.]", "", line)
+              return line.strip()
 
           def is_price(line):
               return re.fullmatch(r"\d+\.\d{2}", line)
@@ -118,52 +104,55 @@ jobs:
                   return False
               return all(bad not in item_lower for bad in BAD_WORDS)
 
+          def merge_duplicates(items):
+              merged = []
+              for it in items:
+                  matched = False
+                  for m in merged:
+                      if SequenceMatcher(None,it["item"],m["item"]).ratio() > 0.9:
+                          m["qty"] += 1
+                          m["total"] += it["price"]
+                          matched = True
+                          break
+                  if not matched:
+                      merged.append({"item": it["item"],"qty":1,"price":it["price"],"total":it["price"]})
+              return merged
+
           all_items = []
 
-          for fname in os.listdir(IMAGE_DIR):
-              fpath = os.path.join(IMAGE_DIR, fname)
-              img = cv2.imread(fpath)
+          for filename in os.listdir(INPUT_DIR):
+              if not filename.lower().endswith((".jpg",".png")):
+                  continue
+              path = os.path.join(INPUT_DIR, filename)
+              img = cv2.imread(path)
               if img is None:
                   continue
-              pre = preprocess(img)
-              result = ocr.ocr(pre, cls=True)
-              lines = [line[1][0] for line in result[0]]
-              for i, line in enumerate(lines):
-                  if is_price(line):
+              result = ocr.ocr(img, cls=True)
+              lines = [x[1][0].strip() for x in result[0]]
+              for i,line in enumerate(lines):
+                  clean_line = clean_item(line)
+                  if is_price(clean_line):
                       j = i-1
                       while j>=0:
-                          candidate = lines[j].strip()
+                          candidate = clean_item(lines[j])
                           if is_real_item(candidate):
-                              all_items.append({"item": candidate, "price": float(line)})
+                              all_items.append({"item":candidate,"price":float(clean_line)})
                               break
-                          j -=1
+                          j -= 1
 
-          # Merge duplicates
-          merged = []
-          for it in all_items:
-              matched=False
-              for m in merged:
-                  if SequenceMatcher(None, it["item"], m["item"]).ratio()>0.9:
-                      m["qty"]+=1
-                      m["total"]+=it["price"]
-                      matched=True
-                      break
-              if not matched:
-                  merged.append({"item":it["item"],"qty":1,"price":it["price"],"total":it["price"]})
+          merged_items = merge_duplicates(all_items)
 
-          # Save CSV
-          with open(OUTPUT_CSV,"w") as f:
-              f.write("Item,Qty,Price,Total\n")
-              for m in merged:
-                  f.write(f'{m["item"]},{m["qty"]},{m["price"]:.2f},{m["total"]:.2f}\n')
-
-          print(f"CSV saved: {OUTPUT_CSV}")
+          df = pd.DataFrame(merged_items)
+          if not df.empty:
+              df["total"] = df["total"].round(2)
+              df["price"] = df["price"].round(2)
+          df.to_csv(OUTPUT_CSV,index=False)
+          print(f"[INFO] OCR processing complete. CSV saved as {OUTPUT_CSV}")
           EOF
 
-      - name: Create docker-compose.yml
-        run: |
+          # ---------- docker-compose ----------
           cat > paddleocr_project/docker-compose.yml << 'EOF'
-          version: "3.8"
+          version: "3.9"
           services:
             selenium:
               build:
@@ -177,12 +166,14 @@ jobs:
                 dockerfile: Dockerfile.paddle
               volumes:
                 - ./images:/app/images
-                - ./output:/app/output
-              depends_on:
-                - selenium
           EOF
 
-      - name: Build and run Docker Compose
+      - name: Build Docker containers
         run: |
           cd paddleocr_project
-          docker compose up --build --abort-on-container-exit
+          docker-compose build
+
+      - name: Run PaddleOCR container
+        run: |
+          cd paddleocr_project
+          docker-compose run --rm paddleocr
