@@ -1,39 +1,11 @@
-FROM paddlepaddle/paddle:3.3.0
+# Use PaddleOCR prebuilt image
+FROM paddleocr/paddleocr:latest
 
+# Set working directory
 WORKDIR /workspace
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Copy your OCR script
+COPY main.py .
 
-
-# Install compatible NumPy first
-RUN pip install --no-cache-dir --upgrade numpy==1.26.2
-
-# Install Python packages
-RUN pip install --no-cache-dir \
-    paddleocr==2.7.0.3 \
-    opencv-python-headless==4.6.0.66 \
-    PyMuPDF \
-    pandas \
-    matplotlib \
-    tqdm \
-    pillow \
-    scikit-image \
-    requests \
-    python-docx \
-    rapidfuzz \
-    pdf2docx \
-    beautifulsoup4
-
-# Copy project files
-COPY . /workspace
-
-# Expose Ollama port
-EXPOSE 11434
-
-# Start Ollama, wait, pull model, then run your script
-CMD bash -c "python main.py image.jpg image2.jpg"
-
+# Default command
+CMD ["python", "main.py"]
