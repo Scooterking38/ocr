@@ -1,179 +1,133 @@
-name: PaddleOCR Automation
+name: Full OCR Pipeline
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  build-and-run:
+  ocr_pipeline:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      # 1️⃣ Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Create project files
+      # 2️⃣ Create project structure
+      - name: Create folders
         run: |
           mkdir -p paddleocr_project/images
+          mkdir -p paddleocr_project/output
 
-          # ---------- Dockerfile for Selenium ----------
-          cat > paddleocr_project/Dockerfile.selenium << 'EOF'
-          FROM selenium/standalone-chrome:latest
-          WORKDIR /app
-          COPY process_receipts_selenium.py /app/process_receipts_selenium.py
-          CMD ["python3", "/app/process_receipts_selenium.py"]
-          EOF
-
-          # ---------- Dockerfile for PaddleOCR ----------
-          cat > paddleocr_project/Dockerfile.paddle << 'EOF'
-          FROM python:3.10-slim
-          WORKDIR /app
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-              libglib2.0-0 libsm6 libxext6 libxrender-dev libgtk2.0-dev \
-              ffmpeg wget unzip git xvfb \
-              && rm -rf /var/lib/apt/lists/*
-          RUN pip install --upgrade pip
-          RUN pip install --no-cache-dir paddleocr==3.0.0 opencv-python-headless numpy beautifulsoup4 requests pandas
-          COPY process_receipts_paddle.py /app/process_receipts_paddle.py
-          COPY images /app/images
-          CMD ["python", "process_receipts_paddle.py"]
-          EOF
-
-          # ---------- Selenium scraper script ----------
-          cat > paddleocr_project/process_receipts_selenium.py << 'EOF'
+      # 3️⃣ Write Selenium scraper Python script
+      - name: Create scrape_images.py
+        run: |
+          cat <<'EOF' > paddleocr_project/scrape_images.py
           from selenium import webdriver
           from selenium.webdriver.chrome.options import Options
-          import os, time
+          import os
+          import requests
 
-          BASE_URL = "http://aragonindustries.uk/photos"
-          OUTPUT_DIR = "images"
-          os.makedirs(OUTPUT_DIR, exist_ok=True)
+          os.makedirs("images", exist_ok=True)
 
           chrome_options = Options()
-          chrome_options.add_argument("--headless=new")
-          chrome_options.add_argument("--disable-gpu")
+          chrome_options.add_argument("--headless")
           chrome_options.add_argument("--no-sandbox")
+          chrome_options.add_argument("--disable-dev-shm-usage")
 
           driver = webdriver.Chrome(options=chrome_options)
-          driver.get(BASE_URL)
-          time.sleep(5)  # wait for page to load
+          driver.get("http://aragonindustries.uk/photos/")
 
           imgs = driver.find_elements("tag name", "img")
-          print(f"[INFO] Found {len(imgs)} images")
-
           for i, img in enumerate(imgs):
               src = img.get_attribute("src")
               if src:
-                  filename = os.path.join(OUTPUT_DIR, f"img_{i}.jpg")
-                  os.system(f"wget -q '{src}' -O '{filename}'")
-                  print(f"[INFO] Downloaded {filename}")
+                  r = requests.get(src)
+                  with open(f"images/img_{i}.jpg", "wb") as f:
+                      f.write(r.content)
           driver.quit()
           EOF
 
-          # ---------- PaddleOCR processor script ----------
-          cat > paddleocr_project/process_receipts_paddle.py << 'EOF'
-          import cv2, numpy as np, re, os
+      # 4️⃣ Write PaddleOCR processing script
+      - name: Create process_receipts_paddle.py
+        run: |
+          cat <<'EOF' > paddleocr_project/process_receipts_paddle.py
           from paddleocr import PaddleOCR
-          from difflib import SequenceMatcher
-          import pandas as pd
+          import os
+          import csv
 
-          INPUT_DIR = "images"
-          OUTPUT_CSV = "all_receipts.csv"
+          os.makedirs("output", exist_ok=True)
+          ocr = PaddleOCR(use_textline_orientation=True, lang='en')
 
-          BAD_WORDS = ["vat","total","balance","contactless","mastercard","merchant","aid","pan","change","points","nectar","saving","originalprice","price reduction","reduction","new price","old price","sub total","www."]
-          CORRECTIONS = {}
+          image_folder = "images"
+          output_file = "output/all_receipts.csv"
 
-          ocr = PaddleOCR(use_angle_cls=True, lang='en')
-
-          def clean_item(line):
-              line = re.sub(r"([A-Za-z])(\d)", r"\1 \2", line)
-              line = re.sub(r"[^A-Za-z0-9\s/\.]", "", line)
-              return line.strip()
-
-          def is_price(line):
-              return re.fullmatch(r"\d+\.\d{2}", line)
-
-          def is_real_item(item):
-              item_lower = item.lower()
-              if len(item) < 3 or item.replace(".", "", 1).isdigit():
-                  return False
-              return all(bad not in item_lower for bad in BAD_WORDS)
-
-          def merge_duplicates(items):
-              merged = []
-              for it in items:
-                  matched = False
-                  for m in merged:
-                      if SequenceMatcher(None,it["item"],m["item"]).ratio() > 0.9:
-                          m["qty"] += 1
-                          m["total"] += it["price"]
-                          matched = True
-                          break
-                  if not matched:
-                      merged.append({"item": it["item"],"qty":1,"price":it["price"],"total":it["price"]})
-              return merged
-
-          all_items = []
-
-          for filename in os.listdir(INPUT_DIR):
-              if not filename.lower().endswith((".jpg",".png")):
-                  continue
-              path = os.path.join(INPUT_DIR, filename)
-              img = cv2.imread(path)
-              if img is None:
-                  continue
-              result = ocr.ocr(img, cls=True)
-              lines = [x[1][0].strip() for x in result[0]]
-              for i,line in enumerate(lines):
-                  clean_line = clean_item(line)
-                  if is_price(clean_line):
-                      j = i-1
-                      while j>=0:
-                          candidate = clean_item(lines[j])
-                          if is_real_item(candidate):
-                              all_items.append({"item":candidate,"price":float(clean_line)})
-                              break
-                          j -= 1
-
-          merged_items = merge_duplicates(all_items)
-
-          df = pd.DataFrame(merged_items)
-          if not df.empty:
-              df["total"] = df["total"].round(2)
-              df["price"] = df["price"].round(2)
-          df.to_csv(OUTPUT_CSV,index=False)
-          print(f"[INFO] OCR processing complete. CSV saved as {OUTPUT_CSV}")
+          with open(output_file, "w", newline="") as csvfile:
+              writer = csv.writer(csvfile)
+              writer.writerow(["Item","Qty","Price","Total"])
+              for img_file in os.listdir(image_folder):
+                  img_path = os.path.join(image_folder, img_file)
+                  result = ocr.ocr(img_path)
+                  for line in result[0]:
+                      text = " ".join([word_info[1][0] for word_info in line])
+                      writer.writerow([text,"","",""])
           EOF
 
-          # ---------- docker-compose ----------
-          cat > paddleocr_project/docker-compose.yml << 'EOF'
-          version: "3.9"
+      # 5️⃣ Write PaddleOCR Dockerfile
+      - name: Create Dockerfile.paddle
+        run: |
+          cat <<'EOF' > paddleocr_project/Dockerfile.paddle
+          # Base image
+          FROM paddlepaddle/paddle:3.3.0
+
+          # Install dependencies
+          RUN apt-get update && apt-get install -y \
+              python3-pip python3-dev wget unzip git xvfb libglib2.0-0 libsm6 libxext6 libxrender-dev \
+              libgtk2.0-dev ffmpeg && rm -rf /var/lib/apt/lists/*
+
+          # Copy OCR script and images
+          WORKDIR /app
+          COPY process_receipts_paddle.py /app/process_receipts_paddle.py
+          COPY images /app/images
+
+          # Install Python packages
+          RUN pip install --no-cache-dir paddleocr==3.0.0 opencv-python-headless numpy beautifulsoup4 requests pandas
+
+          CMD ["python3", "process_receipts_paddle.py"]
+          EOF
+
+      # 6️⃣ Write docker-compose file
+      - name: Create docker-compose.yml
+        run: |
+          cat <<'EOF' > paddleocr_project/docker-compose.yml
+          version: '3.8'
           services:
-            selenium:
-              build:
-                context: .
-                dockerfile: Dockerfile.selenium
-              volumes:
-                - ./images:/app/images
             paddleocr:
               build:
                 context: .
                 dockerfile: Dockerfile.paddle
               volumes:
                 - ./images:/app/images
+                - ./output:/app/output
           EOF
 
-      - name: Build Docker containers
+      # 7️⃣ Pull Selenium standalone Chrome image and run scraping
+      - name: Run Selenium Docker for image scraping
         run: |
-          cd paddleocr_project
-          docker compose build
+          docker run --rm -v $PWD/paddleocr_project:/app selenium/standalone-chrome:latest \
+            bash -c "python3 /app/scrape_images.py"
 
-      - name: Run PaddleOCR container
+      # 8️⃣ Build and run PaddleOCR Docker
+      - name: Build and run PaddleOCR
         run: |
           cd paddleocr_project
-          docker compose run --rm paddleocr
+          docker-compose build
+          docker-compose run --rm paddleocr
+
+      # 9️⃣ Upload the CSV as an artifact
+      - name: Upload CSV
+        uses: actions/upload-artifact@v3
+        with:
+          name: receipts-csv
+          path: paddleocr_project/output/all_receipts.csv
