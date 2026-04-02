@@ -5,10 +5,15 @@ from paddleocr import PaddleOCR
 from difflib import SequenceMatcher
 from pathlib import Path
 
+# NEW IMPORTS
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+
 # --------------------------
 # CONFIG
 # --------------------------
-INPUT_DIR = Path("aragonindustries.uk/photos")
+BASE_URL = "https://aragonindustries.uk/photos"
 OUTPUT_DIR = Path("aragonindustries.uk/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_CSV = OUTPUT_DIR / "all_receipts.csv"
@@ -28,30 +33,61 @@ CORRECTIONS = {
 }
 
 # --------------------------
+# FETCH IMAGES FROM SITE
+# --------------------------
+def fetch_image_urls():
+    res = requests.get(BASE_URL, headers={"User-Agent": "Mozilla/5.0"})
+    soup = BeautifulSoup(res.text, "html.parser")
+
+    urls = []
+    for img in soup.find_all("img"):
+        src = img.get("src")
+        if src and (".jpg" in src or ".png" in src):
+            urls.append(urljoin(BASE_URL, src))
+
+    return urls
+
+
+def load_image_from_url(url):
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    img_array = np.frombuffer(resp.content, np.uint8)
+    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    return img
+
+# --------------------------
 # PREPROCESSING FUNCTIONS
 # --------------------------
-def preprocess_image(path, max_width=1024):
-    img = cv2.imread(str(path))
+def preprocess_image_from_array(img, max_width=1024):
     if img is None:
-        raise FileNotFoundError(f"{path} not found")
+        raise ValueError("Invalid image")
+
     if img.shape[1] > max_width:
         scale = max_width / img.shape[1]
         img = cv2.resize(img, (max_width, int(img.shape[0] * scale)))
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
     if np.mean(thresh) > 127:
         thresh = 255 - thresh
+
     coords = np.column_stack(np.where(thresh < 255))
     angle = cv2.minAreaRect(coords)[-1]
+
     if angle < -45:
         angle = -(90 + angle)
     else:
         angle = -angle
+
     (h, w) = thresh.shape
     M = cv2.getRotationMatrix2D((w // 2, h // 2), -angle, 1.0)
-    deskewed = cv2.warpAffine(thresh, M, (w, h),
-                              flags=cv2.INTER_CUBIC,
-                              borderMode=cv2.BORDER_REPLICATE)
+
+    deskewed = cv2.warpAffine(
+        thresh, M, (w, h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE
+    )
+
     return deskewed
 
 # --------------------------
@@ -124,14 +160,20 @@ def merge_duplicates(items):
 # --------------------------
 all_items = []
 
-for img_file in INPUT_DIR.glob("*.[jp][pn]g"):  # matches .jpg and .png
-    print(f"\nProcessing {img_file.name} ...")
-    preprocessed_img = preprocess_image(img_file)
+image_urls = fetch_image_urls()
+
+for url in image_urls:
+    print(f"\nProcessing {url} ...")
+
+    img = load_image_from_url(url)
+    preprocessed_img = preprocess_image_from_array(img)
+
     lines = extract_lines(preprocessed_img)
     items = extract_items(lines)
     all_items.extend(items)
 
 merged_items = merge_duplicates(all_items)
+
 # Build CSV content
 csv_content = "Item,Qty,Price,Total\n"
 for m in merged_items:
