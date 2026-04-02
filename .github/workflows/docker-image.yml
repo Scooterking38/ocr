@@ -29,7 +29,7 @@ jobs:
           import os
           import requests
 
-          os.makedirs("images", exist_ok=True)
+          os.makedirs("/images", exist_ok=True)
 
           chrome_options = Options()
           chrome_options.add_argument("--headless")
@@ -44,7 +44,7 @@ jobs:
               src = img.get_attribute("src")
               if src:
                   r = requests.get(src)
-                  with open(f"images/img_{i}.jpg", "wb") as f:
+                  with open(f"/images/img_{i}.jpg", "wb") as f:
                       f.write(r.content)
           driver.quit()
           EOF
@@ -57,11 +57,11 @@ jobs:
           import os
           import csv
 
-          os.makedirs("output", exist_ok=True)
+          os.makedirs("/app/output", exist_ok=True)
           ocr = PaddleOCR(use_textline_orientation=True, lang='en')
 
-          image_folder = "images"
-          output_file = "output/all_receipts.csv"
+          image_folder = "/app/images"
+          output_file = "/app/output/all_receipts.csv"
 
           with open(output_file, "w", newline="") as csvfile:
               writer = csv.writer(csvfile)
@@ -78,20 +78,16 @@ jobs:
       - name: Create Dockerfile.paddle
         run: |
           cat <<'EOF' > paddleocr_project/Dockerfile.paddle
-          # Base image
           FROM paddlepaddle/paddle:3.3.0
 
-          # Install dependencies
           RUN apt-get update && apt-get install -y \
               python3-pip python3-dev wget unzip git xvfb libglib2.0-0 libsm6 libxext6 libxrender-dev \
               libgtk2.0-dev ffmpeg && rm -rf /var/lib/apt/lists/*
 
-          # Copy OCR script and images
           WORKDIR /app
           COPY process_receipts_paddle.py /app/process_receipts_paddle.py
           COPY images /app/images
 
-          # Install Python packages
           RUN pip install --no-cache-dir paddleocr==3.0.0 opencv-python-headless numpy beautifulsoup4 requests pandas
 
           CMD ["python3", "process_receipts_paddle.py"]
@@ -115,7 +111,7 @@ jobs:
       # 7️⃣ Pull Selenium standalone Chrome image and run scraping
       - name: Run Selenium Docker for image scraping
         run: |
-          docker run --rm -v $PWD/paddleocr_project:/app selenium/standalone-chrome:latest \
+          docker run --rm -v $PWD/paddleocr_project/images:/images -v $PWD/paddleocr_project:/app selenium/standalone-chrome:latest \
             bash -c "pip install selenium requests && python3 /app/scrape_images.py"
 
       # 8️⃣ Build and run PaddleOCR Docker
