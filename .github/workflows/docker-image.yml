@@ -43,7 +43,7 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace paddleocr_image:latest
 
       - name: Upload CSV artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         with:
           name: receipt_csv
           path: receipt.csv
