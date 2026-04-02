@@ -6,11 +6,8 @@ WORKDIR /workspace
 RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
-    zstd \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Ollama (SERVER, not just Python package)
-RUN curl -fsSL https://ollama.com/install.sh | sh
 
 # Install compatible NumPy first
 RUN pip install --no-cache-dir --upgrade numpy==1.26.2
@@ -29,8 +26,7 @@ RUN pip install --no-cache-dir \
     python-docx \
     rapidfuzz \
     pdf2docx \
-    beautifulsoup4 \
-    ollama
+    beautifulsoup4
 
 # Copy project files
 COPY . /workspace
@@ -39,10 +35,5 @@ COPY . /workspace
 EXPOSE 11434
 
 # Start Ollama, wait, pull model, then run your script
-CMD bash -c "\
-    ollama serve & \
-    echo 'Waiting for Ollama...' && \
-    sleep 10 && \
-    ollama pull llama3 && \
-    python main.py image.jpg image2.jpg \
-"
+CMD bash -c "python main.py image.jpg image2.jpg"
+
