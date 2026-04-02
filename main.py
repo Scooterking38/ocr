@@ -25,7 +25,7 @@ def crop_receipt_middle(image_path):
     h, w = img.shape[:2]
     cropped = img[int(h*0.2):int(h*0.8), 0:w]  # keep middle 60%
     cv2.imwrite("cropped.jpg", cropped)
-    return "cropped.jpg"
+    return "image.jpg"
 
 def clean_item(line):
     line = re.sub(r"([A-Za-z])(\d)", r"\1 \2", line)
