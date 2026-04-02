@@ -19,6 +19,9 @@ jobs:
         run: |
           mkdir -p paddleocr_project/images
           mkdir -p paddleocr_project/output
+      - name: Fix permissions for images folder
+        run: |
+          chmod -R 777 paddleocr_project/images
 
       # 3️⃣ Write Selenium scraper Python script
       - name: Create scrape_images.py
