@@ -35,10 +35,22 @@ print(receipt_text)
 
 # Send to Ollama
 prompt = f"""
-Extract shop name, items and prices from this receipt.
-Return ONLY CSV format with columns: Shop,Item,Price.
+You are a system that extracts purchased items from supermarket receipts.
 
-Receipt:
+Rules:
+- Only include actual purchased products.
+- Each product has a name and a price.
+- Ignore payment info (Mastercard, Contactless, PAN, AID, Merchant, VAT, Balance Due, etc.).
+- Ignore discounts unless they are attached to an item.
+- Ignore totals, subtotal, VAT, change, points, nectar, etc.
+- The shop name is usually at the bottom (e.g., Sainsbury's, Tesco, Aldi, Lidl).
+- If multiple identical items appear, include them as separate rows.
+- Output ONLY CSV.
+- Do NOT include explanations.
+- Do NOT include code blocks.
+- CSV columns must be exactly: Shop,Item,Price
+
+Receipt text:
 {receipt_text}
 """
 
