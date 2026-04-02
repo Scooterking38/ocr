@@ -1,61 +1,32 @@
 import re
 import cv2
-import numpy as np
+from collections import defaultdict
 from paddleocr import PaddleOCR
 
 # --------------------------
-# IMAGE PREPROCESSING
+# CONFIG
 # --------------------------
-def auto_rotate(image_path):
-    img = cv2.imread(image_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    lines = cv2.HoughLines(edges, 1, np.pi/180, 200)
-    if lines is not None:
-        angles = [(theta * 180 / np.pi) - 90 for rho, theta in lines[:,0]]
-        median_angle = np.median(angles)
-        (h, w) = img.shape[:2]
-        M = cv2.getRotationMatrix2D((w//2, h//2), median_angle, 1.0)
-        rotated = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-        cv2.imwrite("rotated.jpg", rotated)
-        return "rotated.jpg"
-    return image_path
+IMAGE_PATH = "image.jpg"  # already rotated manually
+CROP_MIDDLE = True        # crop middle 60% for better accuracy
+BAD_WORDS = [
+    "vat", "total", "balance", "contactless", "mastercard",
+    "merchant", "aid", "pan", "change", "points", "nectar",
+    "saving", "originalprice", "price reduction", "reduction",
+    "new price", "old price", "sub total"
+]
 
+# --------------------------
+# HELPER FUNCTIONS
+# --------------------------
 def crop_receipt_middle(image_path):
     img = cv2.imread(image_path)
+    if img is None:
+        raise FileNotFoundError(f"Cannot read image {image_path}")
     h, w = img.shape[:2]
-    cropped = img[int(h*0.2):int(h*0.8), 0:w]
+    cropped = img[int(h*0.2):int(h*0.8), 0:w]  # keep middle 60%
     cv2.imwrite("cropped.jpg", cropped)
     return "cropped.jpg"
 
-# --------------------------
-# OCR
-# --------------------------
-ocr = PaddleOCR(use_angle_cls=True, lang='en')
-
-image_path = "image.jpg"
-image_path = auto_rotate(image_path)
-image_path = crop_receipt_middle(image_path)
-
-result = ocr.ocr(image_path, cls=True)
-
-ocr_data = []
-for line in result[0]:
-    box, (text, score) = line
-    ocr_data.append({"box": box, "text": text, "score": score})
-
-def box_center_y(box):
-    return sum(pt[1] for pt in box) / len(box)
-
-lines = [x["text"].strip() for x in sorted(ocr_data, key=lambda b: box_center_y(b["box"])) if x["text"].strip()]
-
-print("OCR TEXT:")
-for l in lines:
-    print(l)
-
-# --------------------------
-# CLEAN AND EXTRACT ITEMS
-# --------------------------
 def clean_item(line):
     line = re.sub(r"([A-Za-z])(\d)", r"\1 \2", line)
     line = re.sub(r"[^A-Za-z0-9\s/\.]", "", line)
@@ -64,19 +35,50 @@ def clean_item(line):
 def is_price(line):
     return re.fullmatch(r"\d+\.\d{2}", line)
 
-BAD_WORDS = [
-    "vat", "total", "balance", "contactless", "mastercard",
-    "merchant", "aid", "pan", "change", "points", "nectar",
-    "saving", "originalprice", "price reduction", "reduction",
-    "new price", "old price", "sub total"
-]
-
 def is_real_item(item):
     item_lower = item.lower()
     if len(item) < 3:
         return False
+    if item.replace(".", "", 1).isdigit():  # skip numeric-only
+        return False
     return all(bad not in item_lower for bad in BAD_WORDS)
 
+def box_center_y(box):
+    return sum(pt[1] for pt in box) / len(box)
+
+# --------------------------
+# OCR
+# --------------------------
+ocr = PaddleOCR(use_angle_cls=True, lang='en')
+
+if CROP_MIDDLE:
+    IMAGE_PATH = crop_receipt_middle(IMAGE_PATH)
+
+result = ocr.ocr(IMAGE_PATH, cls=True)
+
+ocr_data = []
+for line in result[0]:
+    box, (text, score) = line
+    ocr_data.append({"box": box, "text": text, "score": score})
+
+# Sort lines top-to-bottom
+lines = [x["text"].strip() for x in sorted(ocr_data, key=lambda b: box_center_y(b["box"])) if x["text"].strip()]
+
+# Remove garbage lines
+lines = [
+    l for l in lines
+    if l.strip() and not l.strip().lower().startswith((
+        "www.", "pan sequence", "merchant:", "aid:", "debit", "contactless", "balance due"
+    ))
+]
+
+print("OCR TEXT:")
+for l in lines:
+    print(l)
+
+# --------------------------
+# EXTRACT ITEMS
+# --------------------------
 items = []
 i = 0
 while i < len(lines):
@@ -117,12 +119,23 @@ for it in items:
     print(it)
 
 # --------------------------
+# COMBINE DUPLICATES
+# --------------------------
+item_summary = defaultdict(lambda: {"qty": 0, "price": 0.0})
+
+for it in items:
+    key = it["item"]
+    item_summary[key]["qty"] += 1
+    item_summary[key]["price"] = it["price"]  # assume same price per item
+
+# --------------------------
 # WRITE CSV
 # --------------------------
 with open("receipt.csv", "w") as f:
-    f.write("Shop,Item,Price\n")
-    for it in items:
-        f.write(f"{shop},{it['item']},{it['price']:.2f}\n")
+    f.write("Shop,Item,Qty,Price,Total\n")
+    for item, data in item_summary.items():
+        total = data["qty"] * data["price"]
+        f.write(f"{shop},{item},{data['qty']},{data['price']:.2f},{total:.2f}\n")
 
 print("\nCSV OUTPUT:")
 with open("receipt.csv") as f:
