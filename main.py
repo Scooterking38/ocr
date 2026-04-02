@@ -1,31 +1,57 @@
+# main.py
 import re
 import cv2
-from collections import defaultdict
+import numpy as np
 from paddleocr import PaddleOCR
+from difflib import SequenceMatcher
+from pathlib import Path
 
-# --------------------------
-# CONFIG
-# --------------------------
-IMAGE_PATH = "image.jpg"  # already rotated manually
-CROP_MIDDLE = True        # crop middle 60% for better accuracy
-BAD_WORDS = [
-    "vat", "total", "balance", "contactless", "mastercard",
-    "merchant", "aid", "pan", "change", "points", "nectar",
-    "saving", "originalprice", "price reduction", "reduction",
-    "new price", "old price", "sub total"
-]
+INPUT_DIR = Path("aragonindustries.uk/photos")
+OUTPUT_DIR = Path("aragonindustries.uk/output")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_CSV = OUTPUT_DIR / "all_receipts.csv"
 
-# --------------------------
-# HELPER FUNCTIONS
-# --------------------------
-def crop_receipt_middle(image_path):
-    img = cv2.imread(image_path)
-    if img is None:
-        raise FileNotFoundError(f"Cannot read image {image_path}")
-    h, w = img.shape[:2]
-    cropped = img[int(h*0.2):int(h*0.8), 0:w]  # keep middle 60%
-    cv2.imwrite("cropped.jpg", cropped)
-    return "image.jpg"
+BAD_WORDS = ["vat", "total", "balance", "contactless", "mastercard",
+             "merchant", "aid", "pan", "change", "points", "nectar",
+             "saving", "originalprice", "price reduction", "reduction",
+             "new price", "old price", "sub total", "www."]
+
+CORRECTIONS = {
+    "TSUES": "JS RED PEPPER SINGLE",
+    "SHEETS": "JS RED PEPPER SINGLE",
+    "*VIMTO": "VIMTO",
+    "JS S/SKIM MLK2.272L": "JS S/SKIM MLK 2.272L"
+}
+
+def preprocess_image(path, max_width=1024):
+    img = cv2.imread(str(path))
+    if img.shape[1] > max_width:
+        scale = max_width / img.shape[1]
+        img = cv2.resize(img, (max_width, int(img.shape[0] * scale)))
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if np.mean(thresh) > 127:
+        thresh = 255 - thresh
+    coords = np.column_stack(np.where(thresh < 255))
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+    (h, w) = thresh.shape
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), -angle, 1.0)
+    return cv2.warpAffine(thresh, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+
+ocr = PaddleOCR(use_angle_cls=True, lang='en')
+
+def extract_lines(img):
+    result = ocr.ocr(img, cls=True)
+    ocr_data = []
+    for line in result[0]:
+        box, (text, score) = line
+        ocr_data.append({"box": box, "text": text.strip(), "score": score})
+    ocr_data_sorted = sorted(ocr_data, key=lambda b: sum(pt[1] for pt in b["box"]) / len(b["box"]))
+    return [x["text"] for x in ocr_data_sorted if x["text"]]
 
 def clean_item(line):
     line = re.sub(r"([A-Za-z])(\d)", r"\1 \2", line)
@@ -37,106 +63,54 @@ def is_price(line):
 
 def is_real_item(item):
     item_lower = item.lower()
-    if len(item) < 3:
-        return False
-    if item.replace(".", "", 1).isdigit():  # skip numeric-only
+    if len(item) < 3 or item.replace(".", "", 1).isdigit():
         return False
     return all(bad not in item_lower for bad in BAD_WORDS)
 
-def box_center_y(box):
-    return sum(pt[1] for pt in box) / len(box)
+def extract_items(lines):
+    items = []
+    for i, line in enumerate(lines):
+        clean_line = clean_item(line)
+        if is_price(clean_line) and float(clean_line) > 0:
+            j = i - 1
+            while j >= 0:
+                candidate = clean_item(lines[j])
+                if is_real_item(candidate):
+                    items.append({"item": candidate, "price": float(clean_line)})
+                    break
+                j -= 1
+    for it in items:
+        if it["item"] in CORRECTIONS:
+            it["item"] = CORRECTIONS[it["item"]]
+    return items
 
-# --------------------------
-# OCR
-# --------------------------
-ocr = PaddleOCR(use_angle_cls=True, lang='en')
+def merge_duplicates(items):
+    merged = []
+    for it in items:
+        matched = False
+        for m in merged:
+            if SequenceMatcher(None, it["item"], m["item"]).ratio() > 0.9:
+                m["qty"] += 1
+                m["total"] += it["price"]
+                matched = True
+                break
+        if not matched:
+            merged.append({"item": it["item"], "qty": 1, "price": it["price"], "total": it["price"]})
+    return merged
 
-if CROP_MIDDLE:
-    IMAGE_PATH = crop_receipt_middle(IMAGE_PATH)
+all_items = []
+for img_file in INPUT_DIR.glob("*.[jp][pn]g"):
+    print(f"Processing {img_file.name} ...")
+    preprocessed_img = preprocess_image(img_file)
+    lines = extract_lines(preprocessed_img)
+    items = extract_items(lines)
+    all_items.extend(items)
 
-result = ocr.ocr(IMAGE_PATH, cls=True)
+merged_items = merge_duplicates(all_items)
 
-ocr_data = []
-for line in result[0]:
-    box, (text, score) = line
-    ocr_data.append({"box": box, "text": text, "score": score})
+with open(OUTPUT_CSV, "w") as f:
+    f.write("Item,Qty,Price,Total\n")
+    for m in merged_items:
+        f.write(f"{m['item']},{m['qty']},{m['price']:.2f},{m['total']:.2f}\n")
 
-# Sort lines top-to-bottom
-lines = [x["text"].strip() for x in sorted(ocr_data, key=lambda b: box_center_y(b["box"])) if x["text"].strip()]
-
-# Remove garbage lines
-lines = [
-    l for l in lines
-    if l.strip() and not l.strip().lower().startswith((
-        "www.", "pan sequence", "merchant:", "aid:", "debit", "contactless", "balance due"
-    ))
-]
-
-print("OCR TEXT:")
-for l in lines:
-    print(l)
-
-# --------------------------
-# EXTRACT ITEMS
-# --------------------------
-items = []
-i = 0
-while i < len(lines):
-    line = clean_item(lines[i])
-
-    # ITEM then PRICE
-    if i+1 < len(lines) and is_price(lines[i+1]):
-        price = float(lines[i+1])
-        if is_real_item(line):
-            items.append({"item": line, "price": price})
-        i += 2
-        continue
-
-    # ITEM then ORIGINAL PRICE
-    if i+1 < len(lines) and "original" in lines[i+1].lower():
-        m = re.search(r"\d+\.\d{2}", lines[i+1])
-        if m:
-            price = float(m.group())
-            if is_real_item(line):
-                items.append({"item": line, "price": price})
-            i += 2
-            continue
-
-    i += 1
-
-# --------------------------
-# DETECT SHOP
-# --------------------------
-shop = "Unknown"
-for l in lines:
-    if "sainsbury" in l.lower(): shop = "Sainsbury's"
-    elif "tesco" in l.lower(): shop = "Tesco"
-    elif "aldi" in l.lower(): shop = "Aldi"
-    elif "lidl" in l.lower(): shop = "Lidl"
-
-print("\nDETECTED ITEMS:")
-for it in items:
-    print(it)
-
-# --------------------------
-# COMBINE DUPLICATES
-# --------------------------
-item_summary = defaultdict(lambda: {"qty": 0, "price": 0.0})
-
-for it in items:
-    key = it["item"]
-    item_summary[key]["qty"] += 1
-    item_summary[key]["price"] = it["price"]  # assume same price per item
-
-# --------------------------
-# WRITE CSV
-# --------------------------
-with open("receipt.csv", "w") as f:
-    f.write("Shop,Item,Qty,Price,Total\n")
-    for item, data in item_summary.items():
-        total = data["qty"] * data["price"]
-        f.write(f"{shop},{item},{data['qty']},{data['price']:.2f},{total:.2f}\n")
-
-print("\nCSV OUTPUT:")
-with open("receipt.csv") as f:
-    print(f.read())
+print(f"\n✅ All images processed. CSV saved as {OUTPUT_CSV}")
