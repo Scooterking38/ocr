@@ -40,14 +40,26 @@ jobs:
           driver.get("http://aragonindustries.uk/photos/")
 
           imgs = driver.find_elements("tag name", "img")
+          import time
+          import requests
+          
           for i, img in enumerate(imgs):
               src = img.get_attribute("src")
               if src:
-                  # Replace https with http
-                  src = src.replace("https://", "http://")
-                  r = requests.get(src)
-                  with open(f"/images/img_{i}.jpg", "wb") as f:
-                      f.write(r.content)
+                  src = src.replace("https://", "http://")  # keep HTTP to avoid SSL issues
+                  success = False
+                  for attempt in range(3):  # retry up to 3 times
+                      try:
+                          r = requests.get(src, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                          r.raise_for_status()
+                          with open(f"/images/img_{i}.jpg", "wb") as f:
+                              f.write(r.content)
+                          success = True
+                          break
+                      except requests.RequestException:
+                          time.sleep(2)  # wait a bit before retrying
+                  if not success:
+                      print(f"Failed to download {src}")
           driver.quit()
           EOF
 
