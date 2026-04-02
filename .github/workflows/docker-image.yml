@@ -171,9 +171,9 @@ jobs:
       - name: Build Docker containers
         run: |
           cd paddleocr_project
-          docker-compose build
+          docker compose build
 
       - name: Run PaddleOCR container
         run: |
           cd paddleocr_project
-          docker-compose run --rm paddleocr
+          docker compose run --rm paddleocr
