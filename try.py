@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 # --------------------------
 # CONFIG
 # --------------------------
-BASE_URL = "https://aragonindustries.uk/photos"
+BASE_URL = "http://aragonindustries.uk/photos"
 OUTPUT_DIR = Path("aragonindustries.uk/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_CSV = OUTPUT_DIR / "all_receipts.csv"
