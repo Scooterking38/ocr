@@ -1,21 +1,17 @@
-name: OCR Receipts Workflow
+name: Build and Push PaddleOCR Docker
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
 
 jobs:
-  paddleocr:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout code
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Log in to GitHub Container Registry
       - name: Log in to GHCR
         uses: docker/login-action@v2
         with:
@@ -23,20 +19,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build & push Docker image
       - name: Build and push Docker image
         run: |
           docker build -t ghcr.io/${{ github.repository }}/paddleocr:latest .
           docker push ghcr.io/${{ github.repository }}/paddleocr:latest
-
-      # Run OCR container
-      - name: Run OCR script
-        run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace ghcr.io/${{ github.repository }}/paddleocr:latest
-
-      # Upload CSV artifact
-      - name: Upload CSV
-        uses: actions/upload-artifact@v4
-        with:
-          name: all_receipts_csv
-          path: aragonindustries.uk/output/all_receipts.csv
