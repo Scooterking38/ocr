@@ -25,12 +25,7 @@ BAD_WORDS = [
     "new price", "old price", "sub total", "www."
 ]
 
-CORRECTIONS = {
-    "TSUES": "JS RED PEPPER SINGLE",
-    "SHEETS": "JS RED PEPPER SINGLE",
-    "*VIMTO": "VIMTO",
-    "JS S/SKIM MLK2.272L": "JS S/SKIM MLK 2.272L"
-}
+CORRECTIONS = {}
 
 # --------------------------
 # FETCH IMAGES FROM SITE
@@ -49,7 +44,7 @@ def fetch_image_urls():
 
 
 def load_image_from_url(url):
-    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False)
     img_array = np.frombuffer(resp.content, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
     return img
