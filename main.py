@@ -1,49 +1,57 @@
-FROM paddlepaddle/paddle:3.3.0
+import json
+from paddleocr import PaddleOCR
+import subprocess
 
-WORKDIR /workspace
+# Initialize OCR
+ocr = PaddleOCR(use_angle_cls=True, lang='en')
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    ca-certificates \
-    gnupg \
-    lsb-release \
-    && rm -rf /var/lib/apt/lists/*
+image_path = "image.jpg"
+result = ocr.ocr(image_path, cls=True)
 
-# Install Ollama via apt repo
-RUN curl -fsSL https://ollama.com/install.sh | sh || true
+# Flatten OCR results
+ocr_data = []
+for line in result[0]:
+    box = line[0]
+    text = line[1][0]
+    score = line[1][1]
+    ocr_data.append({"box": box, "text": text, "score": score})
 
-# Install compatible NumPy first
-RUN pip install --no-cache-dir --upgrade numpy==1.26.2
+# Get vertical center
+def box_center_y(box):
+    ys = [pt[1] for pt in box]
+    return sum(ys) / len(ys)
 
-# Install Python packages
-RUN pip install --no-cache-dir \
-    paddleocr==2.7.0.3 \
-    opencv-python-headless==4.6.0.66 \
-    PyMuPDF \
-    pandas \
-    matplotlib \
-    tqdm \
-    pillow \
-    scikit-image \
-    requests \
-    python-docx \
-    rapidfuzz \
-    pdf2docx \
-    beautifulsoup4 \
-    ollama
+# Sort top-to-bottom
+ocr_data_sorted = sorted(ocr_data, key=lambda b: box_center_y(b["box"]))
 
-# Copy project files
-COPY . /workspace
+# Merge text
+receipt_text = "\n".join([x["text"] for x in ocr_data_sorted])
 
-# Expose Ollama port
-EXPOSE 11434
+with open("ocr_text.txt", "w") as f:
+    f.write(receipt_text)
 
-# Start Ollama, wait, pull model, then run script
-CMD bash -c "\
-    ollama serve & \
-    echo 'Waiting for Ollama...' && \
-    sleep 15 && \
-    ollama pull phi3 && \
-    python main.py image.jpg image2.jpg \
-"
+print("OCR TEXT:")
+print(receipt_text)
+
+# Send to Ollama
+prompt = f"""
+Extract shop name, items and prices from this receipt.
+Return ONLY CSV format with columns: Shop,Item,Price.
+
+Receipt:
+{receipt_text}
+"""
+
+result = subprocess.run(
+    ["ollama", "run", "llama2"],
+    input=prompt.encode(),
+    stdout=subprocess.PIPE
+)
+
+csv_output = result.stdout.decode()
+
+with open("receipt.csv", "w") as f:
+    f.write(csv_output)
+
+print("CSV OUTPUT:")
+print(csv_output)
