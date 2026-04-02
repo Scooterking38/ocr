@@ -44,8 +44,11 @@ RUN wget -q -O /usr/share/keyrings/google-linux-signing-key.gpg https://dl.googl
 # --------------------------
 # INSTALL CHROMEDRIVER
 # --------------------------
-RUN CHROME_VERSION=$(google-chrome --version | grep -oP "\d+\.\d+\.\d+") \
-    && wget -q "https://chromedriver.storage.googleapis.com/${CHROME_VERSION}/chromedriver_linux64.zip" \
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1-3) \
+    && echo "Detected Chrome version: $CHROME_VERSION" \
+    && LATEST_DRIVER=$(curl -sS "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION") \
+    && echo "Installing Chromedriver version: $LATEST_DRIVER" \
+    && wget -q "https://chromedriver.storage.googleapis.com/${LATEST_DRIVER}/chromedriver_linux64.zip" \
     && unzip chromedriver_linux64.zip -d /usr/bin/ \
     && chmod +x /usr/bin/chromedriver \
     && rm chromedriver_linux64.zip
