@@ -5,14 +5,17 @@ from paddleocr import PaddleOCR
 from difflib import SequenceMatcher
 from pathlib import Path
 
-import requests
+# NEW IMPORTS
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import time
 
 # --------------------------
 # CONFIG
 # --------------------------
-BASE_URL = "http://aragonindustries.uk/photos/"
+BASE_URL = "http://aragonindustries.uk/photos"
 OUTPUT_DIR = Path("aragonindustries.uk/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_CSV = OUTPUT_DIR / "all_receipts.csv"
@@ -27,58 +30,53 @@ BAD_WORDS = [
 CORRECTIONS = {}
 
 # --------------------------
-# FETCH IMAGES
+# FETCH IMAGES WITH SELENIUM
 # --------------------------
 def fetch_image_urls():
     print(f"[INFO] Fetching image URLs from {BASE_URL}")
-    try:
-        res = requests.get(BASE_URL, headers={"User-Agent": "Mozilla/5.0"}, verify=False)
-        print(f"[INFO] HTTP status code: {res.status_code}")
-    except Exception as e:
-        print(f"[ERROR] Failed to fetch {BASE_URL}: {e}")
-        return []
+    options = Options()
+    options.headless = True
+    driver = webdriver.Chrome(options=options)
 
-    soup = BeautifulSoup(res.text, "html.parser")
+    driver.get(BASE_URL)
+    time.sleep(3)  # wait for JS to load
+
+    html = driver.page_source
+    soup = BeautifulSoup(html, "html.parser")
+
     urls = []
-
     for img in soup.find_all("img"):
         src = img.get("src")
-        if src and (".jpg" in src.lower() or ".png" in src.lower()):
-            full_url = urljoin(BASE_URL, src)
-            urls.append(full_url)
-            print(f"[FOUND] Image URL: {full_url}")
+        if src and src.lower().endswith((".jpg", ".png")):
+            urls.append(urljoin(BASE_URL, src))
+
+    driver.quit()
 
     if not urls:
         print("[WARN] No images found on page!")
-
+    print(f"[INFO] Total images found: {len(urls)}")
     return urls
 
-
 def load_image_from_url(url):
-    print(f"[INFO] Downloading image: {url}")
-    try:
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False)
-        img_array = np.frombuffer(resp.content, np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if img is None:
-            print(f"[WARN] Failed to decode image: {url}")
-        return img
-    except Exception as e:
-        print(f"[ERROR] Could not load image {url}: {e}")
-        return None
+    import requests
+    print(f"[INFO] Downloading {url}")
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+    img_array = np.frombuffer(resp.content, np.uint8)
+    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    if img is None:
+        print(f"[WARN] Failed to load image {url}")
+    return img
 
 # --------------------------
-# PREPROCESSING
+# PREPROCESSING FUNCTIONS
 # --------------------------
 def preprocess_image_from_array(img, max_width=1024):
     if img is None:
         raise ValueError("Invalid image")
 
-    print(f"[INFO] Preprocessing image (original shape: {img.shape})")
     if img.shape[1] > max_width:
         scale = max_width / img.shape[1]
         img = cv2.resize(img, (max_width, int(img.shape[0] * scale)))
-        print(f"[INFO] Resized image to {img.shape}")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -87,11 +85,8 @@ def preprocess_image_from_array(img, max_width=1024):
         thresh = 255 - thresh
 
     coords = np.column_stack(np.where(thresh < 255))
-    if coords.size == 0:
-        print("[WARN] No text detected, skipping deskew")
-        return thresh
-
     angle = cv2.minAreaRect(coords)[-1]
+
     if angle < -45:
         angle = -(90 + angle)
     else:
@@ -99,31 +94,28 @@ def preprocess_image_from_array(img, max_width=1024):
 
     (h, w) = thresh.shape
     M = cv2.getRotationMatrix2D((w // 2, h // 2), -angle, 1.0)
-    deskewed = cv2.warpAffine(thresh, M, (w, h),
-                              flags=cv2.INTER_CUBIC,
-                              borderMode=cv2.BORDER_REPLICATE)
-    print(f"[INFO] Deskewed image by {angle:.2f} degrees")
+
+    deskewed = cv2.warpAffine(
+        thresh, M, (w, h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE
+    )
+
     return deskewed
 
 # --------------------------
-# OCR
+# OCR FUNCTIONS
 # --------------------------
 ocr = PaddleOCR(use_angle_cls=True, lang='en')
 
 def extract_lines(img):
-    print("[INFO] Running OCR...")
     result = ocr.ocr(img, cls=True)
     ocr_data = []
-
     for line in result[0]:
         box, (text, score) = line
-        text = text.strip()
-        if text:
-            ocr_data.append({"box": box, "text": text, "score": score})
-
-    print(f"[INFO] OCR detected {len(ocr_data)} lines")
+        ocr_data.append({"box": box, "text": text.strip(), "score": score})
     ocr_data_sorted = sorted(ocr_data, key=lambda b: sum(pt[1] for pt in b["box"]) / len(b["box"]))
-    return [x["text"] for x in ocr_data_sorted]
+    return [x["text"] for x in ocr_data_sorted if x["text"]]
 
 # --------------------------
 # ITEM EXTRACTION
@@ -154,7 +146,6 @@ def extract_items(lines):
                     items.append({"item": candidate, "price": float(clean_line)})
                     break
                 j -= 1
-    print(f"[INFO] Extracted {len(items)} items from OCR lines")
     for it in items:
         if it["item"] in CORRECTIONS:
             it["item"] = CORRECTIONS[it["item"]]
@@ -175,41 +166,37 @@ def merge_duplicates(items):
                 break
         if not matched:
             merged.append({"item": it["item"], "qty": 1, "price": it["price"], "total": it["price"]})
-    print(f"[INFO] Merged into {len(merged)} unique items")
     return merged
 
 # --------------------------
-# MAIN PROCESS
+# PROCESS ALL IMAGES
 # --------------------------
 all_items = []
 
 image_urls = fetch_image_urls()
-print(f"[INFO] Total images found: {len(image_urls)}")
 
 for url in image_urls:
-    print(f"\n[PROCESSING] {url}")
-    img = load_image_from_url(url)
-    if img is None:
-        print(f"[WARN] Skipping {url}")
-        continue
-
-    preprocessed_img = preprocess_image_from_array(img)
-    lines = extract_lines(preprocessed_img)
-    items = extract_items(lines)
-    all_items.extend(items)
+    try:
+        print(f"\n[INFO] Processing {url}")
+        img = load_image_from_url(url)
+        preprocessed_img = preprocess_image_from_array(img)
+        lines = extract_lines(preprocessed_img)
+        items = extract_items(lines)
+        all_items.extend(items)
+    except Exception as e:
+        print(f"[ERROR] Failed processing {url}: {e}")
 
 merged_items = merge_duplicates(all_items)
 
-# --------------------------
-# CSV OUTPUT
-# --------------------------
+# Build CSV content
 csv_content = "Item,Qty,Price,Total\n"
 for m in merged_items:
     csv_content += f"{m['item']},{m['qty']},{m['price']:.2f},{m['total']:.2f}\n"
 
+# Write to file
 with open(OUTPUT_CSV, "w") as f:
     f.write(csv_content)
 
-print("\n[INFO] CSV content:")
-print(csv_content)
+# Print to console
+print(f"\n[INFO] CSV content:\n{csv_content}")
 print(f"\n✅ All images processed. CSV saved as {OUTPUT_CSV}")
